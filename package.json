@@ -1,0 +1,15 @@
+{
+  "name": "credit-accounts-testnet-deployments",
+  "version": "0.0.1",
+  "main": "index.js",
+  "author": "Gregory Melnikov <grigoriy.melnikov@phystech.edu>",
+  "license": "MIT",
+  "dependencies": {
+    "@redstone-finance/evm-connector": "^0.2.5",
+    "@safe-global/safe-contracts": "^1.4.1-2",
+    "@wagmi/cli": "^2.2.0"
+  },
+  "scripts": {
+    "generate:abi": "wagmi generate"
+  }
+}

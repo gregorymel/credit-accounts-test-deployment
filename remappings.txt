@@ -1,0 +1,16 @@
+@1inch/=lib/governance/lib/@1inch/
+@openzeppelin/=lib/governance/lib/@openzeppelin/
+@solady/=lib/governance/lib/@solady/src/
+ds-test/=lib/governance/lib/forge-std/lib/ds-test/src/
+erc4626-tests/=lib/governance/lib/@openzeppelin/lib/erc4626-tests/
+forge-std/=lib/forge-std/src/
+openzeppelin/=lib/governance/lib/@openzeppelin/contracts/
+
+
+@redstone-finance/=node_modules/@redstone-finance/
+@safe-global/=node_modules/@safe-global/
+
+@gearbox-protocol/=lib/governance/lib/@gearbox-protocol/
+
+governance/=lib/governance/
+credit-accounts/=lib/credit-accounts/

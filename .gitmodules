@@ -1,0 +1,10 @@
+[submodule "lib/forge-std"]
+	path = lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "lib/credit-accounts"]
+	path = lib/credit-accounts
+	url = https://github.com/dltxperts/credit-accounts
+[submodule "lib/governance"]
+	path = lib/governance
+	url = https://github.com/gregorymel/governance
+	branch = l2-test-deployment

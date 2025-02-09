@@ -1,29 +1,68 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 interface IPriceOraclev3 {
     function convertToUSD(uint256 amount, address token) external view returns (uint256);
 }
 
 interface ICreditManagerV3 {
-    function creditFacade() external view returns (address);
-    function priceOracle() external view returns (address);
-    function poolQuotaKeeper() external view returns (address);
-}
-
-interface ICreditFacadeV3 {
-    struct MultiCall {
-        address target;
-        bytes callData;
+    enum CollateralCalcTask {
+        GENERIC_PARAMS,
+        DEBT_ONLY,
+        FULL_COLLATERAL_CHECK_LAZY,
+        DEBT_COLLATERAL,
+        DEBT_COLLATERAL_SAFE_PRICES
     }
 
-    function multicall(address creditAccount, MultiCall[] calldata calls) external payable;
+    struct CollateralDebtData {
+        uint256 debt;
+        uint256 cumulativeIndexNow;
+        uint256 cumulativeIndexLastUpdate;
+        uint128 cumulativeQuotaInterest;
+        uint256 accruedInterest;
+        uint256 accruedFees;
+        uint256 totalDebtUSD;
+        uint256 totalValue;
+        uint256 totalValueUSD;
+        uint256 twvUSD;
+        uint256 enabledTokensMask;
+        uint256 quotedTokensMask;
+        address[] quotedTokens;
+        address _poolQuotaKeeper;
+    }
+
+    function creditFacade() external view returns (address);
+    function priceOracle() external view returns (address);
+    function pool() external view returns (address);
+    function poolQuotaKeeper() external view returns (address);
+    function calcDebtAndCollateral(address creditAccount, CollateralCalcTask task)
+        external
+        view
+        returns (CollateralDebtData memory cdd);
+}
+
+struct MultiCall {
+    address target;
+    bytes callData;
 }
 
 interface ICreditFacadeV3Multicall {
     function increaseDebt(uint256 amount) external;
     function decreaseDebt(uint256 amount) external;
     function updateQuota(address token, int96 quotaChange, uint96 minQuota) external;
+}
+
+interface ICreditFacadeV3 {
+    struct DebtLimits {
+        uint128 minDebt;
+        uint128 maxDebt;
+    }
+
+    function debtLimits() external view returns (DebtLimits memory);
+    function creditManager() external view returns (address);
 }
 
 interface IPoolQuotaKeeperV3 {
@@ -33,8 +72,36 @@ interface IPoolQuotaKeeperV3 {
         returns (uint96 quota, uint192 cumulativeIndexLU);
 }
 
+interface IPoolV3 {
+    function creditManagerBorrowable(address creditManager) external view returns (uint256);
+}
+
 interface ICreditAccountV3 {
     function factory() external view returns (address);
+}
+
+interface ISafe {
+    enum Operation {
+        Call,
+        DelegateCall
+    }
+
+    function execTransaction(
+        address to,
+        uint256 value,
+        bytes calldata data,
+        Operation operation,
+        uint256 safeTxGas,
+        uint256 baseGas,
+        uint256 gasPrice,
+        address gasToken,
+        address payable refundReceiver,
+        bytes memory signatures
+    ) external returns (bool success);
+}
+
+interface IMultiSend {
+    function multiSend(bytes memory transactions) external payable;
 }
 
 interface ISafeCreditAccountFactory {
@@ -42,10 +109,18 @@ interface ISafeCreditAccountFactory {
 }
 
 contract CreditAccountHelper {
+    using Address for address;
+
     struct AccountInfo {
         bool isCreditAccount;
         bool isCreditAccountCreated;
         address creditAccountAddress;
+    }
+
+    function multicall(MultiCall[] calldata calls) external {
+        for (uint256 i = 0; i < calls.length; i++) {
+            calls[i].target.functionCall(calls[i].callData);
+        }
     }
 
     /// @dev Predicts the address of a safe_1_1 credit account
@@ -80,6 +155,31 @@ contract CreditAccountHelper {
         }
 
         return info;
+    }
+
+    function getAccountDebtAndTWV(address creditManager, address creditAccount)
+        external
+        view
+        returns (uint256 debt, uint256 twv)
+    {
+        ICreditManagerV3.CollateralDebtData memory cdd = ICreditManagerV3(creditManager).calcDebtAndCollateral(
+            creditAccount, ICreditManagerV3.CollateralCalcTask.DEBT_COLLATERAL
+        );
+        return (cdd.debt, cdd.twvUSD);
+    }
+
+    function getAccountDebtLimits(address creditFacade, address)
+        external
+        view
+        returns (uint256 minDebt, uint256 maxDebt)
+    {
+        ICreditFacadeV3.DebtLimits memory debtLimits = ICreditFacadeV3(creditFacade).debtLimits();
+
+        address cm = ICreditFacadeV3(creditFacade).creditManager();
+        address pool = ICreditManagerV3(cm).pool();
+        uint256 borrowable = IPoolV3(pool).creditManagerBorrowable(cm);
+
+        return (debtLimits.minDebt, Math.min(debtLimits.maxDebt, borrowable));
     }
 
     /// @dev Gets the prices of a list of tokens from price oracle

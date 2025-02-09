@@ -2,7 +2,7 @@
 pragma solidity ^0.8.17;
 
 import {CreditFacadeV3} from "@gearbox-protocol/core-v3/contracts/credit/CreditFacadeV3.sol";
-import {ICreditManagerV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditManagerV3.sol";
+import {ICreditManagerV3, ManageDebtAction} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditManagerV3.sol";
 import {ICreditFacadeV3Hooks} from "../interfaces/ICreditFacadeV3Hooks.sol";
 import {ICreditFacadeV3_Extension} from "../interfaces/ICreditFacadeV3_Extension.sol";
 
@@ -51,6 +51,24 @@ contract CreditFacadeV3_Extension is CreditFacadeV3, ICreditFacadeV3Hooks, ICred
         emit OpenCreditAccount(creditAccount, onBehalfOf, msg.sender, 0 /* referral code*/ );
 
         _onBehalfOf = address(0);
+    }
+
+    function increaseDebt(uint256 amount) external whenNotPaused whenNotExpired whenExecuting creditAccountOnly {
+        _manageDebt(msg.sender, amount, _enabledTokensMask, ManageDebtAction.INCREASE_DEBT);
+    }
+
+    function decreaseDebt(uint256 amount) external whenNotPaused whenNotExpired whenExecuting creditAccountOnly {
+        _manageDebt(msg.sender, amount, _enabledTokensMask, ManageDebtAction.DECREASE_DEBT);
+    }
+
+    function updateQuota(address token, int96 quotaChange, uint96 minQuota)
+        external
+        whenNotPaused
+        whenNotExpired
+        whenExecuting
+        creditAccountOnly
+    {
+        (_enabledTokensMask,) = _updateQuota(msg.sender, msg.data[4:], _enabledTokensMask, type(uint256).max);
     }
 
     /*//////////////////////////////////////////////////////////////////////////

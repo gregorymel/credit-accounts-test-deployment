@@ -55,9 +55,7 @@ import {BaseDeploymentHelper} from "./BaseDeploymentHelper.sol";
 
 /**
  * @title TestnetInstall
- * @notice This deployment script installs the test market and credit suite on testnet.
- * The main run() method now calls _setUp() and _createMarket(), where _createMarket()
- * has been broken into several helper functions.
+ * @notice This deployment script installs the test market and credit suite on Base.
  */
 contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
     // State variables
@@ -70,15 +68,11 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
     // helper accounts
     uint256 internal defaultPK = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
-    address GEAR;
+    address internal GEAR;
     address TREASURY;
 
     string constant name = "Test Market USDC";
     string constant symbol = "dUSDC";
-
-    // Deployed pool and configurator addresses
-    // IPoolV3 public ethPool;
-    // address public marketConfigurator;
 
     constructor() GlobalSetup() {
         (creditAccountOwnerPK, creditAccountOwner) = _generateAccount("CREDIT_ACCOUNT_OWNER");
@@ -98,14 +92,6 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         vm.label(deployer, "DEPLOYER");
         vm.label(riskCurator, "RISK_CURATOR");
 
-        // tmp: remove
-        // vm.deal(deployer, 1e18);
-        // _mintUSDC(deployer, 1e5);
-        // _mintUSDC(riskCurator, 1e5);
-        // _mintUSDC(address(this), 1e5);
-
-        // vm.startBroadcast(deployerPK);
-
         vm.startBroadcast(deployerPK);
 
         _fundActors();
@@ -123,15 +109,6 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         console.log("Finish deployment!");
 
         vm.stopBroadcast();
-
-        vm.startBroadcast(deployerPK);
-        payable(0xdF61f9B6C039456d33776a1b6931B2E5D761Cd8f).transfer(1e18);
-        IWETH(WETH).deposit{value: 1e18}();
-        IERC20(WETH).transfer(0x4549C4d4f8C6A37A3355a30787CDFEA7f7C13643, 1e18);
-        // payable(0xdF61f9B6C039456d33776a1b6931B2E5D761Cd8f).transfer(1e18);
-        vm.stopBroadcast();
-
-        _mintUSDC(0x4549C4d4f8C6A37A3355a30787CDFEA7f7C13643, 10e6);
 
         // Check that the market is deployed and configured correctly if dry run
         // if (vm.isContext(VmSafe.ForgeContext.ScriptDryRun)) {
@@ -156,6 +133,7 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         calls[0] = _generateActivateCall(0, instanceOwner, TREASURY, WETH, GEAR);
         _submitAndSignOrExecuteProposal("Activate instance", calls);
 
+        _setCoreContracts();
         _setupAccountFactoryAndFacade();
         _setUpGlobalContracts();
 
@@ -192,7 +170,8 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         address mc = _deployMarketConfigurator(mcf);
 
         // Deploy the market and set up the credit suite.
-        (address pool, address cm) = _deployMarketAndCreditSuite(mc, ap);
+        address pool = _deployMarket(mc, ap);
+        address cm = _deployCreditSuite(mc, ap, pool);
 
         // Configure pool and credit suite
         _configurePool(mc, pool, cm);
@@ -241,8 +220,8 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         return mc;
     }
 
-    /// @dev Creates the pool and credit suite.
-    function _deployMarketAndCreditSuite(address mc, address ap) internal returns (address pool, address cm) {
+    /// @dev Creates the pool
+    function _deployMarket(address mc, address ap) internal returns (address pool) {
         _startPrankOrBroadcast(riskCurator);
         // Predict the future market (pool) address.
         address predictedPool = MarketConfigurator(mc).previewCreateMarket(3_10, USDC, name, symbol);
@@ -276,6 +255,14 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         // Ensure the preview matches the deployed pool.
         assertEq(predictedPool, pool);
 
+        _stopPrankOrBroadcast();
+        return pool;
+    }
+
+    /// @dev Creates the credit suite - credit manager, facade
+    function _deployCreditSuite(address mc, address ap, address pool) internal returns (address cm) {
+        _startPrankOrBroadcast(riskCurator);
+
         // Prepare safe account factory deploy parameters.
         bytes memory constructorParams = abi.encode(
             ap,
@@ -303,7 +290,9 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
             CreditFacadeParams({degenNFT: address(0), expirable: false, migrateBotList: false});
         bytes memory creditSuiteParams = abi.encode(creditManagerParams, facadeParams);
         cm = MarketConfigurator(mc).createCreditSuite(3_10, pool, creditSuiteParams);
+
         _stopPrankOrBroadcast();
+        return cm;
     }
 
     /// @dev Opens a credit account using the deployed credit suite.
@@ -371,6 +360,7 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
     /// @dev Configures the credit suite by adding collateral tokens.
     function _configureCreditSuite(address marketConfigurator, address cm) internal {
         _startPrankOrBroadcast(riskCurator);
+        // TODO: uncomment after fixing the issue with CreditConfiguratorV3
         // MarketConfigurator(marketConfigurator).configureCreditSuite(
         //     cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (WETH, 1_50))
         // );
@@ -475,6 +465,14 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
 
         // Workaround to upload CreditFacadeV3_Extension
         contractsToUpload[24].initCode = type(CreditFacadeV3_Extension).creationCode;
+
+        // contractsToUpload.push(
+        //     UploadableContract({
+        //         initCode: type(CreditFacadeV3_Extension).creationCode,
+        //         contractType: "CREDIT_FACADE",
+        //         version: 3_20
+        //     })
+        // );
     }
 
     function _mintWETH(address to, uint256 amount) internal {

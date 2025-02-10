@@ -77,6 +77,38 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
     string constant name = "Test Market USDC";
     string constant symbol = "dUSDC";
 
+    /// Parsed JSON files
+    AddressesJSON internal addressesJSON;
+    MarketJSON internal marketJSON;
+
+    modifier loadAddressesJSON() {
+        string memory json = vm.readFile("./addresses.json");
+        addressesJSON = abi.decode(vm.parseJson(json), (AddressesJSON));
+        _;
+    }
+
+    modifier serializeAddressesJSON() {
+        _;
+        string memory json = vm.serializeAddress("addresses", "addressProvider", addressesJSON.addressProvider);
+        json = vm.serializeAddress("addresses", "bytecodeRepository", addressesJSON.bytecodeRepository);
+        json = vm.serializeAddress("addresses", "instanceManager", addressesJSON.instanceManager);
+        json = vm.serializeAddress("addresses", "multisig", addressesJSON.multisig);
+        vm.writeJson(json, "./addresses.json");
+    }
+
+    modifier loadMarketJSON() {
+        string memory json = vm.readFile("./market.json");
+        marketJSON = abi.decode(vm.parseJson(json), (MarketJSON));
+        _;
+    }
+
+    modifier serializeMarketJSON() {
+        _;
+        string memory json = vm.serializeAddress("market", "marketConfigurator", marketJSON.marketConfigurator);
+        json = vm.serializeAddress("market", "pool", marketJSON.pool);
+        vm.writeJson(json, "./market.json");
+    }
+
     constructor() GlobalSetup() {
         deployerPK = vm.envUint("DEPLOYER_PRIVATE_KEY");
         console.log("deployerPK", deployerPK);
@@ -84,7 +116,7 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
         riskCurator = vm.addr(_generatePrivateKey("RISK_CURATOR"));
     }
 
-    function runCore() public {
+    function runCore() public serializeAddressesJSON {
         if (isAnvil()) {
             console.log("Setting up anvil");
             anvil_setBalance(deployer, 1e18);
@@ -96,18 +128,18 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
         vm.startBroadcast(deployerPK);
 
         _setUp();
-        _exportJson();
 
         // (address pool, address cm) = _createMarket();
 
         // address helper = address(new CreditAccountHelper());
         vm.stopBroadcast();
 
-        // string memory json = vm.serializeAddress("addresses", "creditManager", cm);
-        // json = vm.serializeAddress("addresses", "creditFacade", ICreditManagerV3(cm).creditFacade());
-        // json = vm.serializeAddress("addresses", "creditAccountFactory", ICreditManagerV3(cm).accountFactory());
-        // json = vm.serializeAddress("addresses", "creditAccountHelper", helper);
-        // vm.writeJson(json, "./credit_suite.json");
+        addressesJSON = AddressesJSON({
+            addressProvider: instanceManager.addressProvider(),
+            bytecodeRepository: address(bytecodeRepository),
+            instanceManager: address(instanceManager),
+            multisig: address(multisig)
+        });
 
         // console.log("--------------------------------");
         // console.log("CreditManager", cm);
@@ -121,14 +153,10 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
         // if (vm.isContext(VmSafe.ForgeContext.ScriptDryRun)) {
         //     _checkProperWork(cm, pool);
         // }
-
-        // vm.writeJson(json, path);
     }
 
-    function runMarket() public {
-        string memory json = vm.readFile("./addresses.json");
-        AddressesJSON memory addresses = abi.decode(vm.parseJson(json), (AddressesJSON));
-        instanceManager = InstanceManager(addresses.instanceManager);
+    function runMarket() public loadAddressesJSON serializeMarketJSON {
+        instanceManager = InstanceManager(addressesJSON.instanceManager);
 
         vm.startBroadcast(deployerPK);
 
@@ -149,24 +177,15 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
 
         vm.stopBroadcast();
 
-        string memory jsonWrite = vm.serializeAddress("addresses", "marketConfigurator", mc);
-        jsonWrite = vm.serializeAddress("addresses", "pool", pool);
-        vm.writeJson(jsonWrite, "./market.json");
+        marketJSON = MarketJSON({marketConfigurator: mc, pool: pool});
     }
 
-    function runCreditSuite() public {
-        string memory json = vm.readFile("./market.json");
-        MarketJSON memory market = abi.decode(vm.parseJson(json), (MarketJSON));
-
-        string memory jsonAddresses = vm.readFile("./addresses.json");
-        AddressesJSON memory addresses = abi.decode(vm.parseJson(jsonAddresses), (AddressesJSON));
-        address ap = addresses.addressProvider;
-
+    function runCreditSuite() public loadMarketJSON loadAddressesJSON {
         vm.startBroadcast(deployerPK);
 
         // Deploy and configure credit suite
-        address cm = _deployCreditSuite(market.marketConfigurator, ap, market.pool);
-        _configureCreditSuite(market.marketConfigurator, cm, market.pool);
+        address cm = _deployCreditSuite(marketJSON.marketConfigurator, addressesJSON.addressProvider, marketJSON.pool);
+        _configureCreditSuite(marketJSON.marketConfigurator, cm, marketJSON.pool);
 
         vm.stopBroadcast();
     }

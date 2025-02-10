@@ -17,3 +17,10 @@ generated
 
 # Node modules
 node_modules
+
+# scripts
+script/Test.sol
+
+# json
+addresses.json
+market.json

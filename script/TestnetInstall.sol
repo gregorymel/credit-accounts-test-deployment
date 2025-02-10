@@ -6,6 +6,7 @@ import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {VmSafe} from "forge-std/Vm.sol";
 import {UploadableContract, GlobalSetup} from "governance/contracts/test/helpers/GlobalSetup.sol";
+import {SignatureHelper} from "governance/contracts/test/helpers/SignatureHelper.sol";
 
 // OpenZeppelin
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -13,15 +14,10 @@ import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 
 // Gearbox Core Interfaces
 import {ICreditManagerV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditManagerV3.sol";
-import {ICreditFacadeV3, MultiCall} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditFacadeV3.sol";
-import {ICreditFacadeV3Multicall} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditFacadeV3Multicall.sol";
 import {IPoolV3} from "@gearbox-protocol/core-v3/contracts/interfaces/IPoolV3.sol";
 import {IPoolQuotaKeeperV3} from "@gearbox-protocol/core-v3/contracts/interfaces/IPoolQuotaKeeperV3.sol";
 import {IWETH} from "@gearbox-protocol/core-v3/contracts/interfaces/external/IWETH.sol";
 import {ITumblerV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ITumblerV3.sol";
-import {ICreditAccountV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditAccountV3.sol";
-// Gearbox Utilities
-import {MultiCallBuilder} from "@gearbox-protocol/core-v3/contracts/test/lib/MultiCallBuilder.sol";
 
 // Governance Contracts
 import {InstanceManager} from "governance/contracts/instance/InstanceManager.sol";
@@ -39,76 +35,87 @@ import {CrossChainCall, DeployParams, Call} from "governance/contracts/interface
 import {CreditFacadeParams, CreditManagerParams} from "governance/contracts/factories/CreditFactory.sol";
 import {IConfigureActions as IPoolConfigureActions} from "governance/contracts/factories/PoolFactory.sol";
 import {IConfigureActions as ICreditConfigureActions} from "governance/contracts/factories/CreditFactory.sol";
+import {CrossChainMultisig} from "governance/contracts/global/CrossChainMultisig.sol";
 
 // Account Management
 import {SafeCreditAccountFactory} from "credit-accounts/src/safe/CreditAccountFactory.sol";
-import {SafeCreditAccount} from "credit-accounts/src/safe/CreditAccount.sol";
-import {ISafe, Enum} from "credit-accounts/src/safe/interfaces/ISafe.sol";
 
 // Local Extensions & Utilities
 import {CreditFacadeV3_Extension} from "../src/credit/CreditFacadeV3_Extension.sol";
-import {SafeDeployments} from "./SafeDeploymentLib.sol";
 
 // Helpers
 import {CreditAccountHelper} from "../src/CreditAccountHelper.sol";
-import {BaseDeploymentHelper} from "./BaseDeploymentHelper.sol";
+import {SafeDeployments} from "./helpers/SafeDeploymentLib.sol";
+import {AnvilHelper} from "./helpers/AnvilHelper.sol";
+import {InstallChecker} from "./InstallChecker.sol";
+
+struct AddressesJSON {
+    address addressProvider;
+    address bytecodeRepository;
+    address instanceManager;
+    address multisig;
+}
+
+struct MarketJSON {
+    address marketConfigurator;
+    address pool;
+}
 
 /**
  * @title TestnetInstall
  * @notice This deployment script installs the test market and credit suite on Base.
  */
-contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
+contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
     // State variables
     address internal riskCurator;
     address internal deployer;
-    // Owner of credit account
-    uint256 internal immutable creditAccountOwnerPK;
-    address internal immutable creditAccountOwner;
-
-    // helper accounts
-    uint256 internal defaultPK = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+    uint256 internal deployerPK;
 
     address internal GEAR;
-    address TREASURY;
+    address internal TREASURY;
 
     string constant name = "Test Market USDC";
     string constant symbol = "dUSDC";
 
     constructor() GlobalSetup() {
-        (creditAccountOwnerPK, creditAccountOwner) = _generateAccount("CREDIT_ACCOUNT_OWNER");
+        deployerPK = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        console.log("deployerPK", deployerPK);
+        deployer = vm.addr(deployerPK);
+        riskCurator = vm.addr(_generatePrivateKey("RISK_CURATOR"));
     }
 
-    function run() public {
-        uint256 deployerPK = defaultPK;
-        // uint256 deployerPK = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        deployer = vm.addr(deployerPK);
-        riskCurator = deployer;
-
-        vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        IERC20(USDC).transfer(deployer, 1e5);
-        vm.stopBroadcast();
-
-        // riskCurator = vm.addr(_generatePrivateKey("RISK_CURATOR"));
-        vm.label(deployer, "DEPLOYER");
-        vm.label(riskCurator, "RISK_CURATOR");
+    function runCore() public {
+        if (isAnvil()) {
+            console.log("Setting up anvil");
+            anvil_setBalance(deployer, 1e18);
+            // anvil_impersonateAccount(FAT_USDC_HOLDER);
+            // vm.broadcast(FAT_USDC_HOLDER);
+            // IERC20(USDC).transfer(deployer, 1e5);
+        }
 
         vm.startBroadcast(deployerPK);
 
-        _fundActors();
-
         _setUp();
-        (address pool, address cm) = _createMarket();
+        _exportJson();
 
-        address helper = address(new CreditAccountHelper());
-        console.log("--------------------------------");
-        console.log("CreditManager", cm);
-        console.log("CreditFacade", ICreditManagerV3(cm).creditFacade());
-        console.log("CreditAccountFactory", ICreditManagerV3(cm).accountFactory());
-        console.log("CreditAccountHelper", helper);
-        console.log("--------------------------------");
-        console.log("Finish deployment!");
+        // (address pool, address cm) = _createMarket();
 
+        // address helper = address(new CreditAccountHelper());
         vm.stopBroadcast();
+
+        // string memory json = vm.serializeAddress("addresses", "creditManager", cm);
+        // json = vm.serializeAddress("addresses", "creditFacade", ICreditManagerV3(cm).creditFacade());
+        // json = vm.serializeAddress("addresses", "creditAccountFactory", ICreditManagerV3(cm).accountFactory());
+        // json = vm.serializeAddress("addresses", "creditAccountHelper", helper);
+        // vm.writeJson(json, "./credit_suite.json");
+
+        // console.log("--------------------------------");
+        // console.log("CreditManager", cm);
+        // console.log("CreditFacade", ICreditManagerV3(cm).creditFacade());
+        // console.log("CreditAccountFactory", ICreditManagerV3(cm).accountFactory());
+        // console.log("CreditAccountHelper", helper);
+        // console.log("--------------------------------");
+        // console.log("Finish deployment!");
 
         // Check that the market is deployed and configured correctly if dry run
         // if (vm.isContext(VmSafe.ForgeContext.ScriptDryRun)) {
@@ -116,6 +123,52 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         // }
 
         // vm.writeJson(json, path);
+    }
+
+    function runMarket() public {
+        string memory json = vm.readFile("./addresses.json");
+        AddressesJSON memory addresses = abi.decode(vm.parseJson(json), (AddressesJSON));
+        instanceManager = InstanceManager(addresses.instanceManager);
+
+        vm.startBroadcast(deployerPK);
+
+        // Retrieve required addresses from the instance manager & address provider.
+        address ap = instanceManager.addressProvider();
+        address mcf = IAddressProvider(ap).getAddressOrRevert(AP_MARKET_CONFIGURATOR_FACTORY, NO_VERSION_CONTROL);
+        address poolFactory = IAddressProvider(ap).getAddressOrRevert(AP_POOL_FACTORY, 3_10);
+
+        // Fund the pool factory with a minimal USDC deposit.
+        _fundPoolFactoryUSDC(poolFactory);
+
+        // Deploy the MarketConfigurator
+        address mc = _deployMarketConfigurator(mcf);
+
+        // Deploy and coonfigure pool
+        address pool = _deployMarket(mc, ap);
+        _configurePool(mc, pool);
+
+        vm.stopBroadcast();
+
+        string memory jsonWrite = vm.serializeAddress("addresses", "marketConfigurator", mc);
+        jsonWrite = vm.serializeAddress("addresses", "pool", pool);
+        vm.writeJson(jsonWrite, "./market.json");
+    }
+
+    function runCreditSuite() public {
+        string memory json = vm.readFile("./market.json");
+        MarketJSON memory market = abi.decode(vm.parseJson(json), (MarketJSON));
+
+        string memory jsonAddresses = vm.readFile("./addresses.json");
+        AddressesJSON memory addresses = abi.decode(vm.parseJson(jsonAddresses), (AddressesJSON));
+        address ap = addresses.addressProvider;
+
+        vm.startBroadcast(deployerPK);
+
+        // Deploy and configure credit suite
+        address cm = _deployCreditSuite(market.marketConfigurator, ap, market.pool);
+        _configureCreditSuite(market.marketConfigurator, cm, market.pool);
+
+        vm.stopBroadcast();
     }
 
     /**
@@ -134,7 +187,7 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         _submitAndSignOrExecuteProposal("Activate instance", calls);
 
         _setCoreContracts();
-        _setupAccountFactoryAndFacade();
+        _setAccountFactoryAndFacade();
         _setUpGlobalContracts();
 
         // Set up price feeds and allow tokens
@@ -153,44 +206,28 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         _allowPriceFeed(DAI, CHAINLINK_DAI_USD);
     }
 
-    /**
-     * @dev Creates and configures the market and credit suite.
-     */
-    function _createMarket() internal returns (address, address) {
-        // Retrieve required addresses from the instance manager & address provider.
-        address ap = instanceManager.addressProvider();
-        address mcf = IAddressProvider(ap).getAddressOrRevert(AP_MARKET_CONFIGURATOR_FACTORY, NO_VERSION_CONTROL);
-        address poolFactory = IAddressProvider(ap).getAddressOrRevert(AP_POOL_FACTORY, 3_10);
+    // /**
+    //  * @dev Creates and configures the market and credit suite.
+    //  */
+    // function _createMarket() internal returns (address, address) {
+    //     // Retrieve required addresses from the instance manager & address provider.
+    //     address ap = instanceManager.addressProvider();
+    //     address mcf = IAddressProvider(ap).getAddressOrRevert(AP_MARKET_CONFIGURATOR_FACTORY, NO_VERSION_CONTROL);
+    //     address poolFactory = IAddressProvider(ap).getAddressOrRevert(AP_POOL_FACTORY, 3_10);
 
-        // Fund the pool factory with a minimal USDC deposit.
-        // _fundPoolFactory(poolFactory);
-        _fundPoolFactoryUSDC(poolFactory);
+    //     // Fund the pool factory with a minimal USDC deposit.
+    //     // _fundPoolFactory(poolFactory);
+    //     _fundPoolFactoryUSDC(poolFactory);
 
-        // Deploy the MarketConfigurator
-        address mc = _deployMarketConfigurator(mcf);
+    //     // Deploy the MarketConfigurator
+    //     address mc = _deployMarketConfigurator(mcf);
 
-        // Deploy the market and set up the credit suite.
-        address pool = _deployMarket(mc, ap);
-        address cm = _deployCreditSuite(mc, ap, pool);
+    //     // Deploy and coonfigure pool
+    //     address pool = _deployMarket(mc, ap);
+    //     _configurePool(mc, pool);
 
-        // Configure pool and credit suite
-        _configurePool(mc, pool, cm);
-        _configureCreditSuite(mc, cm);
-        return (pool, cm);
-    }
-
-    function _checkProperWork(address cm, address pool) internal {
-        // Advance the block number once before opening the credit account.
-        vm.roll(block.number + 1);
-
-        // Open the credit account and obtain a reference to the credit facade.
-        (address creditAccount, CreditFacadeV3_Extension creditFacade) = _openCreditAccount(cm);
-
-        // Check that market is deployed and configured correctly
-        _depositFunds(cm, pool);
-        _increaseDebtAndUpdateQuota(creditAccount, creditFacade);
-        _executeSafeTransaction(creditAccount);
-    }
+    //     return (pool, cm);
+    // }
 
     /// @dev Funds the pool factory with a minimal deposit.
     function _fundPoolFactory(address poolFactory) internal {
@@ -199,7 +236,6 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
     }
 
     function _fundPoolFactoryUSDC(address poolFactory) internal {
-        // _mintUSDC(poolFactory, 1e5);
         _startPrankOrBroadcast(deployer);
         uint256 amount = IERC20(USDC).balanceOf(deployer);
         console.log("USDC balance", amount);
@@ -295,36 +331,13 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         return cm;
     }
 
-    /// @dev Opens a credit account using the deployed credit suite.
-    function _openCreditAccount(address cm)
-        internal
-        returns (address creditAccount, CreditFacadeV3_Extension creditFacade)
-    {
-        creditFacade = CreditFacadeV3_Extension(ICreditManagerV3(cm).creditFacade());
-        address onBehalfOf = creditAccountOwner;
-        vm.startPrank(onBehalfOf);
-        address[] memory owners = new address[](1);
-        owners[0] = onBehalfOf;
-        uint256 threshold = 1;
-        bytes32 accountSalt = keccak256(abi.encodePacked(owners, threshold));
-        address predictedCreditAccount =
-            SafeCreditAccountFactory(ICreditManagerV3(cm).accountFactory()).predictCreditAccountAddress(accountSalt);
-        creditAccount = creditFacade.openCreditSmartAccount(onBehalfOf, predictedCreditAccount);
-        console.log("creditAccount", creditAccount);
-        vm.stopPrank();
-        return (creditAccount, creditFacade);
-    }
-
     /// @dev Configures the pool by setting debt limits, adding tokens, and updating rates.
-    function _configurePool(address marketConfigurator, address pool, address cm) internal {
+    function _configurePool(address marketConfigurator, address pool) internal {
         _startPrankOrBroadcast(riskCurator);
 
         // Set debt limits
         MarketConfigurator(marketConfigurator).configurePool(
             address(pool), abi.encodeCall(IPoolConfigureActions.setTotalDebtLimit, (100e6))
-        );
-        MarketConfigurator(marketConfigurator).configurePool(
-            address(pool), abi.encodeCall(IPoolConfigureActions.setCreditManagerDebtLimit, (cm, 100e6))
         );
 
         // Set token debt limits
@@ -358,7 +371,7 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
     }
 
     /// @dev Configures the credit suite by adding collateral tokens.
-    function _configureCreditSuite(address marketConfigurator, address cm) internal {
+    function _configureCreditSuite(address marketConfigurator, address cm, address pool) internal {
         _startPrankOrBroadcast(riskCurator);
         // TODO: uncomment after fixing the issue with CreditConfiguratorV3
         // MarketConfigurator(marketConfigurator).configureCreditSuite(
@@ -370,83 +383,12 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         MarketConfigurator(marketConfigurator).configureCreditSuite(
             cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (DAI, 1_50))
         );
-        _stopPrankOrBroadcast();
-    }
 
-    /// @dev Deposits funds into the pool and prints liquidity and credit parameters.
-    function _depositFunds(address cm, address pool) internal {
-        address supplier = makeAddr("SUPPLIER");
-        _mintUSDC(supplier, 100e6);
-
-        // vm.deal(supplier, 2e18);
-        // IWETH(WETH).deposit{value: 1e18}();
-
-        _startPrankOrBroadcast(supplier);
-        IERC20(USDC).approve(address(pool), 100e6);
-        IPoolV3(pool).depositWithReferral(100e6, supplier, 0);
-        _stopPrankOrBroadcast();
-
-        uint256 availableLiquidity = IPoolV3(pool).availableLiquidity();
-        console.log("availableLiquidity", availableLiquidity);
-        uint256 debtLimit = IPoolV3(pool).creditManagerDebtLimit(cm);
-        console.log("debtLimit", debtLimit);
-        uint256 borrowable = IPoolV3(pool).creditManagerBorrowable(cm);
-        console.log("borrowable", borrowable);
-    }
-
-    /// @dev Increases debt and updates quota using a multicall.
-    function _increaseDebtAndUpdateQuota(address creditAccount, CreditFacadeV3_Extension creditFacade) internal {
-        _mintWETH(creditAccount, 1e18);
-        _mintUSDT(creditAccount, 1e6);
-        _mintDAI(creditAccount, 1e18);
-
-        _startPrankOrBroadcast(creditAccount);
-        creditFacade.multicall(
-            creditAccount,
-            MultiCallBuilder.build(
-                MultiCall({
-                    target: address(creditFacade),
-                    callData: abi.encodeCall(ICreditFacadeV3Multicall.increaseDebt, (1e6))
-                }),
-                MultiCall({
-                    target: address(creditFacade),
-                    callData: abi.encodeCall(ICreditFacadeV3Multicall.updateQuota, (USDT, 2e6, 0))
-                }),
-                // MultiCall({
-                //     target: address(creditFacade),
-                //     callData: abi.encodeCall(ICreditFacadeV3Multicall.updateQuota, (WETH, 1e6, 0))
-                // }),
-                MultiCall({
-                    target: address(creditFacade),
-                    callData: abi.encodeCall(ICreditFacadeV3Multicall.updateQuota, (DAI, 2e6, 0))
-                })
-            )
+        // set debt limit for credit manager
+        MarketConfigurator(marketConfigurator).configurePool(
+            address(pool), abi.encodeCall(IPoolConfigureActions.setCreditManagerDebtLimit, (cm, 100e6))
         );
-        _stopPrankOrBroadcast();
-    }
 
-    /// @dev Executes a safe transaction on the credit account.
-    function _executeSafeTransaction(address creditAccount) internal {
-        ISafe safeCreditAccount = ISafe(creditAccount);
-        (bool success, bytes memory data) = address(safeCreditAccount).staticcall(abi.encodeWithSignature("nonce()"));
-        require(success, "Static call to nonce() failed");
-        uint256 nonce = abi.decode(data, (uint256));
-
-        bytes32 txHash = safeCreditAccount.getTransactionHash(
-            address(0), 0, "", Enum.Operation.Call, 0, 0, 0, address(0), payable(address(0)), nonce
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(creditAccountOwnerPK, txHash);
-        bytes memory signature = abi.encodePacked(r, s, v);
-
-        address realCreditManager = ICreditAccountV3(creditAccount).creditManager();
-        address realCreditFacade = ICreditManagerV3(realCreditManager).creditFacade();
-        console.log("realCreditManager", realCreditManager);
-        console.log("realCreditFacade", realCreditFacade);
-
-        _startPrankOrBroadcast(creditAccountOwner);
-        safeCreditAccount.execTransaction(
-            address(0), 0, "", Enum.Operation.Call, 0, 0, 0, address(0), payable(address(0)), signature
-        );
         _stopPrankOrBroadcast();
     }
 
@@ -454,7 +396,7 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
     // Existing helper functions
     // ----------------------------
 
-    function _setupAccountFactoryAndFacade() internal {
+    function _setAccountFactoryAndFacade() internal {
         contractsToUpload.push(
             UploadableContract({
                 initCode: type(SafeCreditAccountFactory).creationCode,
@@ -475,37 +417,33 @@ contract TestnetInstall is Script, GlobalSetup, BaseDeploymentHelper {
         // );
     }
 
-    function _mintWETH(address to, uint256 amount) internal {
-        address holder = makeAddr("WETH_HOLDER");
-        vm.deal(holder, amount);
+    function _generatePrivateKey(string memory salt) internal view override(SignatureHelper) returns (uint256) {
+        uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        // uint256 deployerPK = defaultPK;
 
-        vm.startPrank(holder);
-        IWETH(WETH).deposit{value: amount}();
-        IERC20(WETH).transfer(to, amount);
-        vm.stopPrank();
-    }
+        // for simplicity, we use the same private key for all accounts
+        // deployer == instanceOwner == riskCurator == author == auditor == dao == treasury
 
-    function _mintToken(address token, address fatTokenHolder, address to, uint256 amount) internal {
-        vm.prank(fatTokenHolder);
-        IERC20(token).transfer(to, amount);
-    }
+        if (
+            keccak256(abi.encodePacked(salt)) == keccak256("INSTANCE_OWNER")
+                || keccak256(abi.encodePacked(salt)) == keccak256("AUDITOR")
+                || keccak256(abi.encodePacked(salt)) == keccak256("AUTHOR")
+                || keccak256(abi.encodePacked(salt)) == keccak256("TREASURY")
+                || keccak256(abi.encodePacked(salt)) == keccak256("DAO")
+                || keccak256(abi.encodePacked(salt)) == keccak256("RISK_CURATOR")
+        ) {
+            return deployerPrivateKey;
+        }
 
-    function _mintUSDC(address to, uint256 amount) internal {
-        _mintToken(USDC, FAT_USDC_HOLDER, to, amount);
-    }
+        // These accounts only used for off-chain signatures and don't need to have non-zero balance
+        // signer1
+        // signer2
 
-    function _mintUSDT(address to, uint256 amount) internal {
-        _mintToken(USDT, FAT_USDT_HOLDER, to, amount);
-    }
+        // if (salt == "SIGNER_1" || salt == "SIGNER_2") {
+        //     return uint256(keccak256(abi.encodePacked(salt)));
+        // }
 
-    function _mintDAI(address to, uint256 amount) internal {
-        _mintToken(DAI, FAT_DAI_HOLDER, to, amount);
-    }
-
-    function _generateAccount(string memory name) internal returns (uint256, address) {
-        uint256 pk = uint256(keccak256(abi.encodePacked(name)));
-        address account = vm.addr(pk);
-        vm.label(account, name);
-        return (pk, account);
+        console.log("Generating private key for...", salt);
+        return uint256(keccak256(abi.encodePacked(salt)));
     }
 }

@@ -32,10 +32,10 @@ contract SetUpTestAccount is BaseDeploymentHelper, AnvilHelper {
         IERC20(USDC).transfer(creditAccount, 1e6);
 
         vm.broadcast(FAT_USDT_HOLDER);
-        IERC20(USDT).transfer(creditAccount, 100e6);
+        IERC20(USDT).transfer(creditAccount, 1e6);
 
         vm.broadcast(FAT_DAI_HOLDER);
-        IERC20(DAI).transfer(creditAccount, 100e18);
+        IERC20(DAI).transfer(creditAccount, 1e18);
 
         _depositUSDCToPool();
     }
@@ -43,7 +43,7 @@ contract SetUpTestAccount is BaseDeploymentHelper, AnvilHelper {
     function _depositUSDCToPool() internal {
         // _impersonateAccount(FAT_USDC_HOLDER);
 
-        address cm = 0x001f9287458360aF005C292E947C3b553cb31877;
+        address cm = 0x60b0c098BbDCCb5C8516f11873512932fC08bbA8;
         address pool = ICreditManagerV3(cm).pool();
 
         vm.startBroadcast(FAT_USDC_HOLDER);

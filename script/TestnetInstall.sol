@@ -48,24 +48,13 @@ import {CreditAccountHelper} from "../src/CreditAccountHelper.sol";
 import {SafeDeployments} from "./helpers/SafeDeploymentLib.sol";
 import {AnvilHelper} from "./helpers/AnvilHelper.sol";
 import {InstallChecker} from "./InstallChecker.sol";
-
-struct AddressesJSON {
-    address addressProvider;
-    address bytecodeRepository;
-    address instanceManager;
-    address multisig;
-}
-
-struct MarketJSON {
-    address marketConfigurator;
-    address pool;
-}
-
+import {JsonHelper, AddressesJSON, MarketJSON, CreditSuiteJSON} from "./helpers/JsonHelper.sol";
 /**
  * @title TestnetInstall
  * @notice This deployment script installs the test market and credit suite on Base.
  */
-contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
+
+contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper {
     // State variables
     address internal riskCurator;
     address internal deployer;
@@ -76,38 +65,6 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
 
     string constant name = "Test Market USDC";
     string constant symbol = "dUSDC";
-
-    /// Parsed JSON files
-    AddressesJSON internal addressesJSON;
-    MarketJSON internal marketJSON;
-
-    modifier loadAddressesJSON() {
-        string memory json = vm.readFile("./addresses.json");
-        addressesJSON = abi.decode(vm.parseJson(json), (AddressesJSON));
-        _;
-    }
-
-    modifier serializeAddressesJSON() {
-        _;
-        string memory json = vm.serializeAddress("addresses", "addressProvider", addressesJSON.addressProvider);
-        json = vm.serializeAddress("addresses", "bytecodeRepository", addressesJSON.bytecodeRepository);
-        json = vm.serializeAddress("addresses", "instanceManager", addressesJSON.instanceManager);
-        json = vm.serializeAddress("addresses", "multisig", addressesJSON.multisig);
-        vm.writeJson(json, "./addresses.json");
-    }
-
-    modifier loadMarketJSON() {
-        string memory json = vm.readFile("./market.json");
-        marketJSON = abi.decode(vm.parseJson(json), (MarketJSON));
-        _;
-    }
-
-    modifier serializeMarketJSON() {
-        _;
-        string memory json = vm.serializeAddress("market", "marketConfigurator", marketJSON.marketConfigurator);
-        json = vm.serializeAddress("market", "pool", marketJSON.pool);
-        vm.writeJson(json, "./market.json");
-    }
 
     constructor() GlobalSetup() {
         deployerPK = vm.envUint("DEPLOYER_PRIVATE_KEY");
@@ -130,8 +87,6 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
         _setUp();
 
         // (address pool, address cm) = _createMarket();
-
-        // address helper = address(new CreditAccountHelper());
         vm.stopBroadcast();
 
         addressesJSON = AddressesJSON({
@@ -140,14 +95,6 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
             instanceManager: address(instanceManager),
             multisig: address(multisig)
         });
-
-        // console.log("--------------------------------");
-        // console.log("CreditManager", cm);
-        // console.log("CreditFacade", ICreditManagerV3(cm).creditFacade());
-        // console.log("CreditAccountFactory", ICreditManagerV3(cm).accountFactory());
-        // console.log("CreditAccountHelper", helper);
-        // console.log("--------------------------------");
-        // console.log("Finish deployment!");
 
         // Check that the market is deployed and configured correctly if dry run
         // if (vm.isContext(VmSafe.ForgeContext.ScriptDryRun)) {
@@ -180,14 +127,43 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
         marketJSON = MarketJSON({marketConfigurator: mc, pool: pool});
     }
 
-    function runCreditSuite() public loadMarketJSON loadAddressesJSON {
+    function runCreditSuite() public loadMarketJSON loadAddressesJSON serializeCreditSuiteJSON {
         vm.startBroadcast(deployerPK);
 
         // Deploy and configure credit suite
         address cm = _deployCreditSuite(marketJSON.marketConfigurator, addressesJSON.addressProvider, marketJSON.pool);
         _configureCreditSuite(marketJSON.marketConfigurator, cm, marketJSON.pool);
 
+        address helper = address(new CreditAccountHelper());
+
         vm.stopBroadcast();
+
+        console.log("--------------------------------");
+        console.log("CreditManager", cm);
+        console.log("CreditFacade", ICreditManagerV3(cm).creditFacade());
+        console.log("CreditAccountFactory", ICreditManagerV3(cm).accountFactory());
+        console.log("CreditAccountHelper", helper);
+        console.log("--------------------------------");
+
+        creditSuiteJSON = CreditSuiteJSON({
+            creditManager: cm,
+            creditFacade: ICreditManagerV3(cm).creditFacade(),
+            creditAccountFactory: ICreditManagerV3(cm).accountFactory(),
+            creditAccountHelper: helper
+        });
+    }
+
+    function runUpdateHelper() public loadCreditSuiteJSON serializeCreditSuiteJSON {
+        vm.startBroadcast(deployerPK);
+        address newCreditAccountHelper = address(new CreditAccountHelper());
+        vm.stopBroadcast();
+
+        console.log("--------------------------------");
+        console.log("CreditAccountHelper old", creditSuiteJSON.creditAccountHelper);
+        console.log("CreditAccountHelper new", newCreditAccountHelper);
+        console.log("--------------------------------");
+
+        creditSuiteJSON.creditAccountHelper = newCreditAccountHelper;
     }
 
     /**
@@ -318,6 +294,8 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
     function _deployCreditSuite(address mc, address ap, address pool) internal returns (address cm) {
         _startPrankOrBroadcast(riskCurator);
 
+        // bytes32 salt = keccak256(abi.encodePacked(deployer, block.timestamp));
+
         // Prepare safe account factory deploy parameters.
         bytes memory constructorParams = abi.encode(
             ap,
@@ -336,8 +314,8 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
             liquidationPremium: 1_50,
             feeLiquidationExpired: 1_50,
             liquidationPremiumExpired: 1_50,
-            minDebt: 1e6, // 1e14,
-            maxDebt: 25e6, // 1e14 * 25,
+            minDebt: 1e5, // 1e14,
+            maxDebt: 25e5, // 1e14 * 25,
             name: "Credit Manager USDC",
             accountFactoryParams: accountFactoryParams
         });
@@ -393,14 +371,14 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
     function _configureCreditSuite(address marketConfigurator, address cm, address pool) internal {
         _startPrankOrBroadcast(riskCurator);
         // TODO: uncomment after fixing the issue with CreditConfiguratorV3
-        // MarketConfigurator(marketConfigurator).configureCreditSuite(
-        //     cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (WETH, 1_50))
-        // );
         MarketConfigurator(marketConfigurator).configureCreditSuite(
-            cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (USDT, 1_50))
+            cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (WETH, 90_00))
         );
         MarketConfigurator(marketConfigurator).configureCreditSuite(
-            cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (DAI, 1_50))
+            cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (USDT, 90_00))
+        );
+        MarketConfigurator(marketConfigurator).configureCreditSuite(
+            cm, abi.encodeCall(ICreditConfigureActions.addCollateralToken, (DAI, 90_00))
         );
 
         // set debt limit for credit manager
@@ -458,9 +436,13 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker {
         // signer1
         // signer2
 
-        // if (salt == "SIGNER_1" || salt == "SIGNER_2") {
-        //     return uint256(keccak256(abi.encodePacked(salt)));
-        // }
+        if (keccak256(abi.encodePacked(salt)) == keccak256("SIGNER_1")) {
+            return vm.envUint("SIGNER_1_PRIVATE_KEY");
+        }
+
+        if (keccak256(abi.encodePacked(salt)) == keccak256("SIGNER_2")) {
+            return vm.envUint("SIGNER_2_PRIVATE_KEY");
+        }
 
         console.log("Generating private key for...", salt);
         return uint256(keccak256(abi.encodePacked(salt)));

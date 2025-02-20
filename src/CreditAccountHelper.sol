@@ -98,6 +98,8 @@ interface ISafe {
         address payable refundReceiver,
         bytes memory signatures
     ) external returns (bool success);
+
+    function nonce() external view returns (uint256);
 }
 
 interface IMultiSend {
@@ -160,18 +162,21 @@ contract CreditAccountHelper {
     function getAccountDebtAndTWV(address creditManager, address creditAccount)
         external
         view
-        returns (uint256 debt, uint256 twv)
+        returns (uint256 debtPrincipal, uint256 totalDebt, uint256 twv)
     {
         ICreditManagerV3.CollateralDebtData memory cdd = ICreditManagerV3(creditManager).calcDebtAndCollateral(
             creditAccount, ICreditManagerV3.CollateralCalcTask.DEBT_COLLATERAL
         );
-        return (cdd.debt, cdd.twvUSD);
+
+        debtPrincipal = cdd.debt;
+        totalDebt = cdd.debt + cdd.accruedInterest + cdd.accruedFees;
+        twv = cdd.twvUSD;
     }
 
     function getAccountDebtLimits(address creditFacade, address)
         external
         view
-        returns (uint256 minDebt, uint256 maxDebt)
+        returns (uint256 minDebt, uint256 maxDebt, uint256 borrowable)
     {
         ICreditFacadeV3.DebtLimits memory debtLimits = ICreditFacadeV3(creditFacade).debtLimits();
 
@@ -179,7 +184,7 @@ contract CreditAccountHelper {
         address pool = ICreditManagerV3(cm).pool();
         uint256 borrowable = IPoolV3(pool).creditManagerBorrowable(cm);
 
-        return (debtLimits.minDebt, Math.min(debtLimits.maxDebt, borrowable));
+        return (debtLimits.minDebt, debtLimits.maxDebt, borrowable);
     }
 
     /// @dev Gets the prices of a list of tokens from price oracle

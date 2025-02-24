@@ -22,6 +22,7 @@ import {ITumblerV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ITumble
 // Governance Contracts
 import {InstanceManager} from "governance/contracts/instance/InstanceManager.sol";
 import {IAddressProvider} from "governance/contracts/interfaces/IAddressProvider.sol";
+import {IBytecodeRepository} from "governance/contracts/interfaces/IBytecodeRepository.sol";
 import {
     AP_MARKET_CONFIGURATOR_FACTORY,
     AP_POOL_FACTORY,
@@ -33,8 +34,8 @@ import {MarketConfiguratorFactory} from "governance/contracts/instance/MarketCon
 // Governance Types & Factories
 import {CrossChainCall, DeployParams, Call} from "governance/contracts/interfaces/Types.sol";
 import {CreditFacadeParams, CreditManagerParams} from "governance/contracts/factories/CreditFactory.sol";
-import {IConfigureActions as IPoolConfigureActions} from "governance/contracts/factories/PoolFactory.sol";
-import {IConfigureActions as ICreditConfigureActions} from "governance/contracts/factories/CreditFactory.sol";
+import {IPoolConfigureActions} from "governance/contracts/interfaces/factories/IPoolConfigureActions.sol";
+import {ICreditConfigureActions} from "governance/contracts/interfaces/factories/ICreditConfigureActions.sol";
 import {CrossChainMultisig} from "governance/contracts/global/CrossChainMultisig.sol";
 
 // Account Management
@@ -49,6 +50,14 @@ import {SafeDeployments} from "./helpers/SafeDeploymentLib.sol";
 import {AnvilHelper} from "./helpers/AnvilHelper.sol";
 import {InstallChecker} from "./InstallChecker.sol";
 import {JsonHelper, AddressesJSON, MarketJSON, CreditSuiteJSON} from "./helpers/JsonHelper.sol";
+import {LibString} from "@solady/utils/LibString.sol";
+
+// Factories
+import {CreditFactory} from "governance/contracts/factories/CreditFactory.sol";
+import {AP_CREDIT_FACTORY} from "governance/contracts/libraries/ContractLiterals.sol";
+
+// v32
+import {CreditFactoryV32, CreditManagerV32, CreditConfiguratorV32} from "./v32/CreditSuiteMocksV32.sol";
 /**
  * @title TestnetInstall
  * @notice This deployment script installs the test market and credit suite on Base.
@@ -64,13 +73,18 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
     address internal TREASURY;
 
     string constant name = "Test Market USDC";
-    string constant symbol = "dUSDC";
+    string constant symbol = "dUSDC v32";
 
     constructor() GlobalSetup() {
         deployerPK = vm.envUint("DEPLOYER_PRIVATE_KEY");
         console.log("deployerPK", deployerPK);
         deployer = vm.addr(deployerPK);
         riskCurator = vm.addr(_generatePrivateKey("RISK_CURATOR"));
+    }
+
+    /// @dev override the SALT for the InstanceManager, BytecodeRepository, and CCG
+    function _SALT() internal pure override returns (bytes32) {
+        return bytes32("SALT_V32");
     }
 
     function runCore() public serializeAddressesJSON {
@@ -112,14 +126,19 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
         address mcf = IAddressProvider(ap).getAddressOrRevert(AP_MARKET_CONFIGURATOR_FACTORY, NO_VERSION_CONTROL);
         address poolFactory = IAddressProvider(ap).getAddressOrRevert(AP_POOL_FACTORY, 3_10);
 
-        // Fund the pool factory with a minimal USDC deposit.
-        _fundPoolFactoryUSDC(poolFactory);
-
         // Deploy the MarketConfigurator
         address mc = _deployMarketConfigurator(mcf);
+        if (mc == address(0)) {
+            _loadMarketJSON();
+            mc = marketJSON.marketConfigurator;
+            revert("MarketConfigurator deployment failed");
+        }
+
+        // Fund the market configurator with a minimal USDC deposit.
+        _fundPoolFactoryUSDC(mc);
 
         // Deploy and coonfigure pool
-        address pool = _deployMarket(mc, ap);
+        address pool = _deployMarket(mc, ap, 3_10);
         _configurePool(mc, pool);
 
         vm.stopBroadcast();
@@ -130,8 +149,17 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
     function runCreditSuite() public loadMarketJSON loadAddressesJSON serializeCreditSuiteJSON {
         vm.startBroadcast(deployerPK);
 
+        instanceManager = InstanceManager(addressesJSON.instanceManager);
+        bytecodeRepository = addressesJSON.bytecodeRepository;
+        multisig = CrossChainMultisig(addressesJSON.multisig);
+        prevBatchHash = multisig.lastBatchHash();
+        _deployCoreFactoriesV32();
+
+        console.log("Deploying credit suite");
+
         // Deploy and configure credit suite
-        address cm = _deployCreditSuite(marketJSON.marketConfigurator, addressesJSON.addressProvider, marketJSON.pool);
+        address cm =
+            _deployCreditSuite(marketJSON.marketConfigurator, addressesJSON.addressProvider, marketJSON.pool, 3_20);
         _configureCreditSuite(marketJSON.marketConfigurator, cm, marketJSON.pool);
 
         address helper = address(new CreditAccountHelper());
@@ -179,9 +207,10 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
         // Activate the instance using a generated cross chain call
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = _generateActivateCall(0, instanceOwner, TREASURY, WETH, GEAR);
-        _submitAndSignOrExecuteProposal("Activate instance", calls);
+        _submitAndSignOrExecuteBatch("Activate instance", calls);
 
         _setCoreContracts();
+        _setPriceFeeds();
         _setAccountFactoryAndFacade();
         _setUpGlobalContracts();
 
@@ -239,23 +268,23 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
     }
 
     /// @dev Deploys the MarketConfigurator and logs the gas used.
+    /// @dev Returns 0 address if deployment fails.
     function _deployMarketConfigurator(address mcf) internal returns (address mc) {
         uint256 gasBefore = gasleft();
         _startPrankOrBroadcast(riskCurator);
         mc = MarketConfiguratorFactory(mcf).createMarketConfigurator(
-            riskCurator, riskCurator, riskCurator, "Test Risk Curator", false
+            riskCurator, riskCurator, "Test Risk Curator v32", false
         );
         uint256 gasAfter = gasleft();
         console.log("createMarketConfigurator gasUsed", gasBefore - gasAfter);
         _stopPrankOrBroadcast();
-        return mc;
     }
 
     /// @dev Creates the pool
-    function _deployMarket(address mc, address ap) internal returns (address pool) {
+    function _deployMarket(address mc, address ap, uint256 minorVersion) internal returns (address pool) {
         _startPrankOrBroadcast(riskCurator);
         // Predict the future market (pool) address.
-        address predictedPool = MarketConfigurator(mc).previewCreateMarket(3_10, USDC, name, symbol);
+        address predictedPool = MarketConfigurator(mc).previewCreateMarket(minorVersion, USDC, name, symbol);
 
         DeployParams memory interestRateModelParams = DeployParams({
             postfix: "LINEAR",
@@ -265,13 +294,13 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
         DeployParams memory rateKeeperParams =
             DeployParams({postfix: "TUMBLER", salt: 0, constructorParams: abi.encode(predictedPool, 0 days)});
         DeployParams memory lossPolicyParams =
-            DeployParams({postfix: "DEFAULT", salt: 0, constructorParams: abi.encode(predictedPool, ap)});
+            DeployParams({postfix: "ALIASED", salt: 0, constructorParams: abi.encode(predictedPool, ap)});
 
         uint256 gasBefore = gasleft();
 
         // USDC is the underlying token
         pool = MarketConfigurator(mc).createMarket({
-            minorVersion: 3_10,
+            minorVersion: minorVersion,
             underlying: USDC,
             name: name,
             symbol: symbol,
@@ -291,10 +320,11 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
     }
 
     /// @dev Creates the credit suite - credit manager, facade
-    function _deployCreditSuite(address mc, address ap, address pool) internal returns (address cm) {
+    function _deployCreditSuite(address mc, address ap, address pool, uint256 minorVersion)
+        internal
+        returns (address cm)
+    {
         _startPrankOrBroadcast(riskCurator);
-
-        // bytes32 salt = keccak256(abi.encodePacked(deployer, block.timestamp));
 
         // Prepare safe account factory deploy parameters.
         bytes memory constructorParams = abi.encode(
@@ -322,7 +352,7 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
         CreditFacadeParams memory facadeParams =
             CreditFacadeParams({degenNFT: address(0), expirable: false, migrateBotList: false});
         bytes memory creditSuiteParams = abi.encode(creditManagerParams, facadeParams);
-        cm = MarketConfigurator(mc).createCreditSuite(3_10, pool, creditSuiteParams);
+        cm = MarketConfigurator(mc).createCreditSuite(minorVersion, pool, creditSuiteParams);
 
         _stopPrankOrBroadcast();
         return cm;
@@ -390,28 +420,51 @@ contract TestnetInstall is GlobalSetup, AnvilHelper, InstallChecker, JsonHelper 
     }
 
     // ----------------------------
-    // Existing helper functions
+    // helper functions
     // ----------------------------
+
+    function _deployCoreFactoriesV32() internal {
+        CrossChainCall[] memory calls = new CrossChainCall[](2);
+
+        bytes32 bytecodeHash = _uploadByteCodeAndSign(type(CreditFactoryV32).creationCode, AP_CREDIT_FACTORY, 3_20);
+        calls[0] = _generateAllowSystemContractCall(bytecodeHash);
+        calls[1] = _generateDeploySystemContractCall(AP_CREDIT_FACTORY, 3_20, true);
+
+        _submitAndSignOrExecuteBatch("System contracts", calls);
+    }
 
     function _setAccountFactoryAndFacade() internal {
         contractsToUpload.push(
             UploadableContract({
                 initCode: type(SafeCreditAccountFactory).creationCode,
                 contractType: "ACCOUNT_FACTORY::SAFE",
-                version: 3_10
+                version: 3_20
             })
         );
 
-        // Workaround to upload CreditFacadeV3_Extension
-        contractsToUpload[24].initCode = type(CreditFacadeV3_Extension).creationCode;
+        contractsToUpload.push(
+            UploadableContract({
+                initCode: type(CreditFacadeV3_Extension).creationCode,
+                contractType: "CREDIT_FACADE",
+                version: 3_20
+            })
+        );
 
-        // contractsToUpload.push(
-        //     UploadableContract({
-        //         initCode: type(CreditFacadeV3_Extension).creationCode,
-        //         contractType: "CREDIT_FACADE",
-        //         version: 3_20
-        //     })
-        // );
+        contractsToUpload.push(
+            UploadableContract({
+                initCode: type(CreditManagerV32).creationCode,
+                contractType: "CREDIT_MANAGER",
+                version: 3_20
+            })
+        );
+
+        contractsToUpload.push(
+            UploadableContract({
+                initCode: type(CreditConfiguratorV32).creationCode,
+                contractType: "CREDIT_CONFIGURATOR",
+                version: 3_20
+            })
+        );
     }
 
     function _generatePrivateKey(string memory salt) internal view override(SignatureHelper) returns (uint256) {

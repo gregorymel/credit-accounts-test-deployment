@@ -9,20 +9,23 @@ import {ICreditFacadeV3_Extension} from "../interfaces/ICreditFacadeV3_Extension
 import {PERCENTAGE_FACTOR} from "@gearbox-protocol/core-v3/contracts/libraries/Constants.sol";
 
 contract CreditFacadeV3_Extension is CreditFacadeV3, ICreditFacadeV3Hooks, ICreditFacadeV3_Extension {
+    /// @notice Contract version
+    // uint256 public constant override version = 3_20;
+
     uint256 internal _enabledTokensMask;
 
     /// @dev Context of the credit account being opened
     address internal _onBehalfOf;
 
     constructor(
-        address _acl,
+        address _addressProvider,
         address _creditManager,
         address _lossPolicy,
         address _botList,
         address _weth,
         address _degenNFT,
         bool _expirable
-    ) CreditFacadeV3(_acl, _creditManager, _lossPolicy, _botList, _weth, _degenNFT, _expirable) {}
+    ) CreditFacadeV3(_addressProvider, _creditManager, _lossPolicy, _botList, _weth, _degenNFT, _expirable) {}
 
     /// @dev Ensures that function caller is `creditAccount` itself
     modifier creditAccountOnly() {
@@ -34,6 +37,10 @@ contract CreditFacadeV3_Extension is CreditFacadeV3, ICreditFacadeV3Hooks, ICred
         address creditAccount = _getActiveCreditAccountOrRevert();
         if (creditAccount != msg.sender) revert();
         _;
+    }
+
+    function version() public pure override returns (uint256) {
+        return 3_20;
     }
 
     function openCreditSmartAccount(address onBehalfOf, address expectedCreditAccount)

@@ -30,14 +30,42 @@ contract JsonHelper is Script {
     CreditSuiteJSON internal creditSuiteJSON;
 
     modifier loadAddressesJSON() {
-        string memory path = string(abi.encodePacked("./jsons/", vm.toString(block.chainid), "/addresses.json"));
-        string memory json = vm.readFile(path);
-        addressesJSON = abi.decode(vm.parseJson(json), (AddressesJSON));
+        _loadAddressesJSON();
         _;
     }
 
     modifier serializeAddressesJSON() {
         _;
+        _serializeAddressesJSON();
+    }
+
+    modifier loadMarketJSON() {
+        _loadMarketJSON();
+        _;
+    }
+
+    modifier serializeMarketJSON() {
+        _;
+        _serializeMarketJSON();
+    }
+
+    modifier loadCreditSuiteJSON() {
+        _loadCreditSuiteJSON();
+        _;
+    }
+
+    modifier serializeCreditSuiteJSON() {
+        _;
+        _serializeCreditSuiteJSON();
+    }
+
+    function _loadAddressesJSON() internal {
+        string memory path = string(abi.encodePacked("./jsons/", vm.toString(block.chainid), "/addresses.json"));
+        string memory json = vm.readFile(path);
+        addressesJSON = abi.decode(vm.parseJson(json), (AddressesJSON));
+    }
+
+    function _serializeAddressesJSON() internal {
         string memory json = vm.serializeAddress("addresses", "addressProvider", addressesJSON.addressProvider);
         json = vm.serializeAddress("addresses", "bytecodeRepository", addressesJSON.bytecodeRepository);
         json = vm.serializeAddress("addresses", "instanceManager", addressesJSON.instanceManager);
@@ -46,30 +74,26 @@ contract JsonHelper is Script {
         vm.writeJson(json, path);
     }
 
-    modifier loadMarketJSON() {
+    function _loadMarketJSON() internal {
         string memory path = string(abi.encodePacked("./jsons/", vm.toString(block.chainid), "/market.json"));
         string memory json = vm.readFile(path);
         marketJSON = abi.decode(vm.parseJson(json), (MarketJSON));
-        _;
     }
 
-    modifier serializeMarketJSON() {
-        _;
+    function _serializeMarketJSON() internal {
         string memory json = vm.serializeAddress("market", "marketConfigurator", marketJSON.marketConfigurator);
         json = vm.serializeAddress("market", "pool", marketJSON.pool);
         string memory path = string(abi.encodePacked("./jsons/", vm.toString(block.chainid), "/market.json"));
         vm.writeJson(json, path);
     }
 
-    modifier loadCreditSuiteJSON() {
+    function _loadCreditSuiteJSON() internal {
         string memory path = string(abi.encodePacked("./jsons/", vm.toString(block.chainid), "/creditSuite.json"));
         string memory json = vm.readFile(path);
         creditSuiteJSON = abi.decode(vm.parseJson(json), (CreditSuiteJSON));
-        _;
     }
 
-    modifier serializeCreditSuiteJSON() {
-        _;
+    function _serializeCreditSuiteJSON() internal {
         string memory json =
             vm.serializeAddress("creditSuite", "creditAccountFactory", creditSuiteJSON.creditAccountFactory);
         json = vm.serializeAddress("creditSuite", "creditAccountHelper", creditSuiteJSON.creditAccountHelper);
